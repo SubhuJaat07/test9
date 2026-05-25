@@ -15,7 +15,8 @@ ENV NODE_ENV=production
 # Copy standalone output
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
+# Only copy public if it exists (prevent build failure if no public dir)
+COPY --from=builder /app/public ./public 2>/dev/null || true
 
 EXPOSE 3000
 ENV PORT=3000

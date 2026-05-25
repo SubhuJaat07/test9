@@ -6,10 +6,7 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
-  // Required for instrumentation.ts
-  experimental: {
-    instrumentationHook: true,
-  },
+  // instrumentation.ts is supported by default in Next.js 16+, no experimental flag needed
 };
 
 export default nextConfig;
